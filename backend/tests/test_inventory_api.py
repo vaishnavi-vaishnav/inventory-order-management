@@ -53,7 +53,8 @@ class TestDashboard:
         r = requests.get(f"{API}/dashboard", headers=auth)
         assert r.status_code == 200
         d = r.json()
-        for k in ("total_products", "total_customers", "total_orders", "total_revenue", "low_stock_products"):
+        for k in ("total_products", "total_customers", "total_orders", "total_revenue", "low_stock_products",
+                  "revenue_trend", "orders_trend", "inventory_health"):
             assert k in d
         assert d["total_products"] >= 6
         assert d["total_customers"] >= 3
@@ -100,6 +101,106 @@ class TestProducts:
         bad2 = {"name": "X", "sku": "NEGTEST-2", "price": 1, "quantity": -5}
         assert requests.post(f"{API}/products", json=bad2, headers=auth).status_code == 422
 
+    def test_import_template(self, auth):
+        r = requests.get(f"{API}/products/import/template", headers=auth)
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert "headers" in data and "example_row" in data
+        assert "xlsx" in data.get("formats", [])
+        for col in ("name", "sku", "price", "quantity", "currency", "category"):
+            assert col in data["headers"]
+
+        csv_r = requests.get(f"{API}/products/import/template?format=csv", headers=auth)
+        assert csv_r.status_code == 200
+        assert "text/csv" in csv_r.headers.get("content-type", "")
+
+        xlsx_r = requests.get(f"{API}/products/import/template?format=xlsx", headers=auth)
+        assert xlsx_r.status_code == 200
+        assert xlsx_r.content[:2] == b"PK"
+
+    def test_import_csv_success_and_duplicate(self, auth):
+        sku_ok = f"CSV-{uuid.uuid4().hex[:8].upper()}"
+        sku_dup = f"CSV-{uuid.uuid4().hex[:8].upper()}"
+        csv_body = (
+            "name,sku,price,quantity,currency,category\n"
+            f"CSV Widget,{sku_ok},15.50,10,EUR,Drinkware\n"
+            f"CSV Duplicate,{sku_dup},9.99,5,USD,\n"
+            f"CSV Dup Again,{sku_dup},9.99,5,USD,\n"
+        )
+        files = {"file": ("products.csv", csv_body, "text/csv")}
+        r = requests.post(f"{API}/products/import", headers=auth, files=files)
+        assert r.status_code == 200, r.text
+        result = r.json()
+        assert result["created"] == 2
+        assert result["failed"] == 1
+        assert result["total_rows"] == 3
+        assert "log_id" in result
+        assert any(e.get("error") == "Duplicate SKU" for e in result.get("errors", []))
+
+        prod = requests.get(f"{API}/products", headers=auth).json()
+        imported = next(p for p in prod if p["sku"] == sku_ok)
+        assert imported["currency"] == "EUR"
+        assert imported["category"] == "Drinkware"
+
+        # cleanup
+        requests.delete(f"{API}/products/{imported['id']}", headers=auth)
+        dup_prod = next(p for p in requests.get(f"{API}/products", headers=auth).json() if p["sku"] == sku_dup)
+        requests.delete(f"{API}/products/{dup_prod['id']}", headers=auth)
+
+    def test_import_xlsx(self, auth):
+        pytest.importorskip("openpyxl")
+        import io
+        from openpyxl import Workbook
+
+        sku = f"XLS-{uuid.uuid4().hex[:8].upper()}"
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["name", "sku", "price", "quantity", "currency", "category"])
+        ws.append(["Excel Widget", sku, 19.99, 5, "GBP", "Drinkware"])
+        buf = io.BytesIO()
+        wb.save(buf)
+        files = {
+            "file": (
+                "products.xlsx",
+                buf.getvalue(),
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        }
+        r = requests.post(f"{API}/products/import", headers=auth, files=files)
+        assert r.status_code == 200, r.text
+        assert r.json()["created"] == 1
+        assert "log_id" in r.json()
+
+        logs = requests.get(f"{API}/products/import/logs", headers=auth)
+        assert logs.status_code == 200
+        assert len(logs.json()) >= 1
+
+        prod = next(p for p in requests.get(f"{API}/products", headers=auth).json() if p["sku"] == sku)
+        assert prod["currency"] == "GBP"
+        requests.delete(f"{API}/products/{prod['id']}", headers=auth)
+
+    def test_import_rejects_invalid_format(self, auth):
+        files = {"file": ("bad.txt", "name,sku", "text/plain")}
+        r = requests.post(f"{API}/products/import", headers=auth, files=files)
+        assert r.status_code == 400
+
+
+# ---------- Categories ----------
+class TestCategories:
+    def test_create_update_delete(self, auth):
+        name = f"TEST_Cat_{uuid.uuid4().hex[:6]}"
+        r = requests.post(f"{API}/categories", json={"name": name}, headers=auth)
+        assert r.status_code == 201, r.text
+        cid = r.json()["id"]
+
+        updated = f"{name}_renamed"
+        u = requests.put(f"{API}/categories/{cid}", json={"name": updated}, headers=auth)
+        assert u.status_code == 200
+        assert u.json()["name"] == updated
+
+        d = requests.delete(f"{API}/categories/{cid}", headers=auth)
+        assert d.status_code == 204
+
 
 # ---------- Customers ----------
 class TestCustomers:
@@ -121,6 +222,43 @@ class TestCustomers:
 
         d = requests.delete(f"{API}/customers/{cid}", headers=auth)
         assert d.status_code == 204
+
+    def test_customer_orders(self, auth):
+        email = f"custord_{uuid.uuid4().hex[:6]}@example.com"
+        c = requests.post(
+            f"{API}/customers",
+            json={"full_name": "TEST_OrderViewer", "email": email, "phone": "+1-555-0200"},
+            headers=auth,
+        )
+        assert c.status_code == 201
+        cid = c.json()["id"]
+
+        sku = f"CV-{uuid.uuid4().hex[:6].upper()}"
+        p = requests.post(
+            f"{API}/products",
+            json={"name": "TEST_CustViewProd", "sku": sku, "price": 5.0, "quantity": 10},
+            headers=auth,
+        )
+        assert p.status_code == 201
+        pid = p.json()["id"]
+
+        o = requests.post(
+            f"{API}/orders",
+            json={"customer_id": cid, "items": [{"product_id": pid, "quantity": 2}]},
+            headers=auth,
+        )
+        assert o.status_code == 201
+        oid = o.json()["id"]
+
+        r = requests.get(f"{API}/customers/{cid}/orders", headers=auth)
+        assert r.status_code == 200
+        orders = r.json()
+        assert len(orders) >= 1
+        assert any(order["id"] == oid for order in orders)
+
+        requests.delete(f"{API}/orders/{oid}", headers=auth)
+        requests.delete(f"{API}/products/{pid}", headers=auth)
+        requests.delete(f"{API}/customers/{cid}", headers=auth)
 
 
 # ---------- Orders ----------

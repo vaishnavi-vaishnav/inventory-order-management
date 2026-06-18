@@ -1,5 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import api, { formatApiError } from "@/lib/api";
+import { formatMoney, CURRENCIES } from "@/lib/currency";
 import { PageHeader, EmptyState } from "@/components/Common";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,7 +30,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { Plus, PencilSimple, Trash, Package, Eye, UploadSimple } from "@phosphor-icons/react";
+import { Plus, PencilSimple, Trash, Package, Eye, FileArrowUp } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const EMPTY = {
@@ -59,8 +61,11 @@ function toNumOrNull(v) {
   return Number.isFinite(n) ? n : null;
 }
 
+const NONE = "__none__";
+
 export default function ProductsPage() {
   const [rows, setRows] = useState([]);
+  const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -80,16 +85,51 @@ export default function ProductsPage() {
     }
   };
 
-  useEffect(() => { refresh(); }, []);
+  const loadCategories = useCallback(async () => {
+    try {
+      const { data } = await api.get("/categories");
+      setCategories(data);
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    }
+  }, []);
+
+  useEffect(() => { refresh(); loadCategories(); }, [loadCategories]);
+
+  const categoryOptions = useMemo(() => {
+    const names = new Set(categories.map((c) => c.name));
+    if (form.category && !names.has(form.category)) {
+      names.add(form.category);
+    }
+    return [...names].sort((a, b) => a.localeCompare(b));
+  }, [categories, form.category]);
+
+  const currencyOptions = useMemo(() => {
+    const codes = new Set(CURRENCIES.map((c) => c.code));
+    const extra = (form.currency || "USD").toUpperCase();
+    if (!codes.has(extra)) {
+      return [{ code: extra, label: extra }, ...CURRENCIES];
+    }
+    return CURRENCIES;
+  }, [form.currency]);
+
+  const catalogStats = useMemo(() => {
+    const low = rows.filter((p) => p.quantity > 0 && p.quantity <= p.reorder_level).length;
+    const out = rows.filter((p) => p.quantity === 0).length;
+    const active = rows.filter((p) => p.status === "active").length;
+    return { total: rows.length, low, out, active };
+  }, [rows]);
 
   const openCreate = () => {
     setEditing(null);
     setForm(EMPTY);
+    loadCategories();
     setOpen(true);
   };
 
   const openEdit = (p) => {
     setEditing(p);
+    loadCategories();
     setForm({
       name: p.name || "", sku: p.sku || "", barcode: p.barcode || "",
       category: p.category || "", brand: p.brand || "",
@@ -117,7 +157,7 @@ export default function ProductsPage() {
       name: form.name.trim(),
       sku: form.sku.trim().toUpperCase(),
       barcode: form.barcode.trim() || null,
-      category: form.category.trim() || null,
+      category: form.category && form.category !== NONE ? form.category.trim() : null,
       brand: form.brand.trim() || null,
       description: form.description.trim() || null,
       short_description: form.short_description.trim() || null,
@@ -141,14 +181,20 @@ export default function ProductsPage() {
       status: form.status || "active",
     };
     try {
+      let saved;
       if (editing) {
-        await api.put(`/products/${editing.id}`, payload);
+        const { data } = await api.put(`/products/${editing.id}`, payload);
+        saved = data;
         toast.success("Product updated");
       } else {
-        await api.post("/products", payload);
+        const { data } = await api.post("/products", payload);
+        saved = data;
         toast.success("Product created");
       }
       setOpen(false);
+      if (viewing?.id === saved.id) {
+        setViewing(saved);
+      }
       refresh();
     } catch (err) {
       toast.error(formatApiError(err.response?.data?.detail));
@@ -175,40 +221,14 @@ export default function ProductsPage() {
       <PageHeader
         section="Catalog"
         title="Products"
-        description="Full product catalog — identity, pricing, inventory, dimensions, media, supplier."
+        description="Manage your full product catalog — pricing, inventory, categories, and variants."
         actions={
-          <div className="flex gap-2">
-            <label className="inline-flex">
-              <input
-                type="file"
-                accept=".csv"
-                className="hidden"
-                data-testid="csv-import-input"
-                onChange={async (e) => {
-                  const file = e.target.files?.[0];
-                  if (!file) return;
-                  const fd = new FormData();
-                  fd.append("file", file);
-                  try {
-                    const { data } = await api.post("/products/import", fd, {
-                      headers: { "Content-Type": "multipart/form-data" },
-                    });
-                    toast.success(`Imported ${data.created} products${data.failed ? ` (${data.failed} failed)` : ""}`);
-                    if (data.errors?.length) {
-                      console.warn("Import errors:", data.errors);
-                    }
-                    refresh();
-                  } catch (err) {
-                    toast.error(formatApiError(err.response?.data?.detail));
-                  } finally {
-                    e.target.value = "";
-                  }
-                }}
-              />
-              <Button type="button" variant="outline" className="rounded-sm" data-testid="csv-import-button" onClick={(e) => e.currentTarget.previousSibling.click()}>
-                <UploadSimple size={16} className="mr-2" />Import CSV
-              </Button>
-            </label>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" className="rounded-sm" asChild>
+              <Link to="/bulk-import" data-testid="products-bulk-import-link">
+                <FileArrowUp size={16} className="mr-2" />Bulk Import
+              </Link>
+            </Button>
             <Button onClick={openCreate} data-testid="add-product-button" className="rounded-sm hover:-translate-y-[1px] transition-transform">
               <Plus size={16} className="mr-2" />New Product
             </Button>
@@ -216,11 +236,27 @@ export default function ProductsPage() {
         }
       />
 
+      {!loading && rows.length > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6" data-testid="catalog-stats">
+          <StatPill label="Total" value={catalogStats.total} />
+          <StatPill label="Active" value={catalogStats.active} accent="text-emerald-700" />
+          <StatPill label="Low stock" value={catalogStats.low} accent="text-amber-600" />
+          <StatPill label="Out of stock" value={catalogStats.out} accent="text-destructive" />
+        </div>
+      )}
+
       {loading ? (
         <div className="text-sm text-muted-foreground">Loading…</div>
       ) : rows.length === 0 ? (
-        <EmptyState icon={Package} title="No products yet" description="Add your first product to begin tracking inventory."
-          action={<Button onClick={openCreate} data-testid="empty-add-product-button" className="rounded-sm">Add Product</Button>} />
+        <EmptyState icon={Package} title="No products yet" description="Add products one at a time or import many from a spreadsheet."
+          action={
+            <div className="flex flex-wrap gap-2 justify-center">
+              <Button onClick={openCreate} data-testid="empty-add-product-button" className="rounded-sm">Add Product</Button>
+              <Button variant="outline" asChild className="rounded-sm">
+                <Link to="/bulk-import">Bulk Import</Link>
+              </Button>
+            </div>
+          } />
       ) : (
         <div className="surface-card overflow-hidden" data-testid="products-table-wrapper">
           <Table>
@@ -263,11 +299,11 @@ export default function ProductsPage() {
                     <TableCell className="text-right font-mono">
                       {p.discount_price != null ? (
                         <div>
-                          <div className="font-semibold">${Number(p.discount_price).toFixed(2)}</div>
-                          <div className="text-xs text-muted-foreground line-through">${Number(p.price).toFixed(2)}</div>
+                          <div className="font-semibold">{formatMoney(p.discount_price, p.currency)}</div>
+                          <div className="text-xs text-muted-foreground line-through">{formatMoney(p.price, p.currency)}</div>
                         </div>
                       ) : (
-                        <div>${Number(p.price).toFixed(2)}</div>
+                        <div>{formatMoney(p.price, p.currency)}</div>
                       )}
                     </TableCell>
                     <TableCell className="text-right">
@@ -305,7 +341,22 @@ export default function ProductsPage() {
               <Field label="Name *"><Input required value={form.name} onChange={(e) => f("name", e.target.value)} data-testid="product-name-input" /></Field>
               <Field label="SKU *"><Input required value={form.sku} onChange={(e) => f("sku", e.target.value.toUpperCase())} className="font-mono" data-testid="product-sku-input" /></Field>
               <Field label="Barcode (EAN/UPC)"><Input value={form.barcode} onChange={(e) => f("barcode", e.target.value)} className="font-mono" data-testid="product-barcode-input" /></Field>
-              <Field label="Category"><Input value={form.category} onChange={(e) => f("category", e.target.value)} data-testid="product-category-input" /></Field>
+              <Field label="Category">
+                <Select
+                  value={form.category || NONE}
+                  onValueChange={(v) => f("category", v === NONE ? "" : v)}
+                >
+                  <SelectTrigger className="rounded-sm" data-testid="product-category-select">
+                    <SelectValue placeholder="Select category" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value={NONE}>No category</SelectItem>
+                    {categoryOptions.map((name) => (
+                      <SelectItem key={name} value={name}>{name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
               <Field label="Brand"><Input value={form.brand} onChange={(e) => f("brand", e.target.value)} data-testid="product-brand-input" /></Field>
               <Field label="Supplier"><Input value={form.supplier} onChange={(e) => f("supplier", e.target.value)} data-testid="product-supplier-input" /></Field>
             </FieldGroup>
@@ -330,7 +381,18 @@ export default function ProductsPage() {
               <Field label="Cost price"><Input type="number" step="0.01" min="0" value={form.cost_price} onChange={(e) => f("cost_price", e.target.value)} data-testid="product-cost-price-input" /></Field>
               <Field label="Discount price"><Input type="number" step="0.01" min="0" value={form.discount_price} onChange={(e) => f("discount_price", e.target.value)} data-testid="product-discount-price-input" /></Field>
               <Field label="Tax rate (%)"><Input type="number" step="0.01" min="0" max="100" value={form.tax_rate} onChange={(e) => f("tax_rate", e.target.value)} data-testid="product-tax-rate-input" /></Field>
-              <Field label="Currency"><Input value={form.currency} onChange={(e) => f("currency", e.target.value.toUpperCase())} className="font-mono" data-testid="product-currency-input" /></Field>
+              <Field label="Currency">
+                <Select value={form.currency || "USD"} onValueChange={(v) => f("currency", v)}>
+                  <SelectTrigger className="rounded-sm font-mono" data-testid="product-currency-select">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {currencyOptions.map(({ code, label }) => (
+                      <SelectItem key={code} value={code}>{label}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
               <Field label="Status">
                 <Select value={form.status} onValueChange={(v) => f("status", v)}>
                   <SelectTrigger className="rounded-sm" data-testid="product-status-select"><SelectValue /></SelectTrigger>
@@ -396,9 +458,9 @@ export default function ProductsPage() {
                 </div>
               )}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <Stat label="Price" val={`$${Number(viewing.price).toFixed(2)}`} />
-                <Stat label="Discount" val={viewing.discount_price != null ? `$${Number(viewing.discount_price).toFixed(2)}` : "—"} />
-                <Stat label="Cost" val={viewing.cost_price != null ? `$${Number(viewing.cost_price).toFixed(2)}` : "—"} />
+                <Stat label="Price" val={formatMoney(viewing.price, viewing.currency)} />
+                <Stat label="Discount" val={viewing.discount_price != null ? formatMoney(viewing.discount_price, viewing.currency) : "—"} />
+                <Stat label="Cost" val={viewing.cost_price != null ? formatMoney(viewing.cost_price, viewing.currency) : "—"} />
                 <Stat label="Tax" val={`${Number(viewing.tax_rate).toFixed(2)}%`} />
                 <Stat label="Stock" val={`${viewing.quantity} ${viewing.unit}`} />
                 <Stat label="Reorder at" val={`${viewing.reorder_level}`} />
@@ -409,11 +471,20 @@ export default function ProductsPage() {
                 <Stat label="Currency" val={viewing.currency} />
                 <Stat label="Tags" val={viewing.tags || "—"} />
               </div>
-              <VariantsManager productId={viewing.id} />
+              <VariantsManager productId={viewing.id} currency={viewing.currency} />
             </div>
           )}
         </DialogContent>
       </Dialog>
+    </div>
+  );
+}
+
+function StatPill({ label, value, accent = "" }) {
+  return (
+    <div className="surface-card rounded-sm px-4 py-3 border border-border">
+      <div className="text-data-label text-[10px] uppercase tracking-wider">{label}</div>
+      <div className={`font-heading text-2xl font-bold font-mono mt-1 ${accent}`}>{value}</div>
     </div>
   );
 }
@@ -454,7 +525,7 @@ function Stat({ label, val }) {
   );
 }
 
-function VariantsManager({ productId }) {
+function VariantsManager({ productId, currency = "USD" }) {
   const [variants, setVariants] = useState([]);
   const [form, setForm] = useState({ sku: "", color: "", size: "", price: "", quantity: "0" });
   const [busy, setBusy] = useState(false);
@@ -521,7 +592,7 @@ function VariantsManager({ productId }) {
                   <td className="font-mono p-2">{v.sku}</td>
                   <td className="p-2">{v.color || "—"}</td>
                   <td className="p-2">{v.size || "—"}</td>
-                  <td className="text-right font-mono p-2">{v.price != null ? `$${Number(v.price).toFixed(2)}` : "(parent)"}</td>
+                  <td className="text-right font-mono p-2">{v.price != null ? formatMoney(v.price, currency) : "(parent)"}</td>
                   <td className="text-right font-mono p-2">{v.quantity}</td>
                   <td className="text-right p-2">
                     <Button variant="ghost" size="icon" onClick={() => remove(v)} data-testid={`delete-variant-${v.sku}`}>

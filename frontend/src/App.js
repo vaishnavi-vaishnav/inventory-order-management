@@ -7,6 +7,8 @@ import AppLayout from "@/layouts/AppLayout";
 import LoginPage from "@/pages/LoginPage";
 import DashboardPage from "@/pages/DashboardPage";
 import ProductsPage from "@/pages/ProductsPage";
+import BulkImportPage from "@/pages/BulkImportPage";
+import CategoriesPage from "@/pages/CategoriesPage";
 import CustomersPage from "@/pages/CustomersPage";
 import OrdersPage from "@/pages/OrdersPage";
 
@@ -27,6 +29,8 @@ export default function App() {
             >
               <Route index element={<DashboardPage />} />
               <Route path="products" element={<ProductsPage />} />
+              <Route path="bulk-import" element={<BulkImportPage />} />
+              <Route path="categories" element={<CategoriesPage />} />
               <Route path="customers" element={<CustomersPage />} />
               <Route path="orders" element={<OrdersPage />} />
             </Route>

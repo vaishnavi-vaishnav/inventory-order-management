@@ -13,6 +13,7 @@ load_dotenv(ROOT_DIR / ".env")
 import os
 import uuid
 import logging
+import json
 import bcrypt
 import jwt
 from datetime import datetime, timezone, timedelta
@@ -21,10 +22,13 @@ from contextlib import asynccontextmanager
 
 import csv
 import io
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, status, Request, UploadFile, File
+import math
+import pandas as pd
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, status, Request, UploadFile, File, Query
+from fastapi.responses import Response
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator
+from pydantic import BaseModel, EmailStr, Field, ConfigDict, field_validator, ValidationError
 
 from sqlalchemy import (
     Column,
@@ -35,6 +39,7 @@ from sqlalchemy import (
     ForeignKey,
     select,
     func,
+    update,
 )
 from sqlalchemy.orm import declarative_base, relationship, selectinload
 from sqlalchemy.ext.asyncio import (
@@ -120,6 +125,25 @@ class Product(Base):
     tags = Column(String, nullable=True)
     supplier = Column(String, nullable=True)
     status = Column(String, nullable=False, default="active")
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class ProductImportLog(Base):
+    __tablename__ = "product_import_logs"
+    id = Column(String, primary_key=True, default=new_id)
+    filename = Column(String, nullable=False)
+    file_type = Column(String, nullable=False)
+    total_rows = Column(Integer, nullable=False, default=0)
+    created_count = Column(Integer, nullable=False, default=0)
+    failed_count = Column(Integer, nullable=False, default=0)
+    errors_json = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
+
+
+class Category(Base):
+    __tablename__ = "categories"
+    id = Column(String, primary_key=True, default=new_id)
+    name = Column(String, unique=True, nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
 
@@ -366,6 +390,31 @@ class CustomerIn(BaseModel):
     address: Optional[str] = None
 
 
+class CategoryIn(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, v: str) -> str:
+        return v.strip()
+
+
+class CategoryUpdate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, v: str) -> str:
+        return v.strip()
+
+
+class CategoryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    name: str
+    created_at: datetime
+
+
 class CustomerOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: str
@@ -443,6 +492,36 @@ class OrderOut(BaseModel):
     items: List[OrderItemOut] = []
 
 
+class ChartPoint(BaseModel):
+    label: str
+    value: float
+
+
+class ImportRowError(BaseModel):
+    row: int
+    sku: Optional[str] = None
+    error: str
+
+
+class ProductImportOut(BaseModel):
+    log_id: str
+    total_rows: int
+    created: int
+    failed: int
+    errors: List[ImportRowError] = []
+
+
+class ProductImportLogOut(BaseModel):
+    id: str
+    filename: str
+    file_type: str
+    total_rows: int
+    created_count: int
+    failed_count: int
+    errors: List[ImportRowError] = []
+    created_at: datetime
+
+
 class DashboardOut(BaseModel):
     total_products: int
     total_customers: int
@@ -450,6 +529,11 @@ class DashboardOut(BaseModel):
     total_revenue: float
     low_stock_count: int
     low_stock_products: List[ProductOut]
+    revenue_trend: List[ChartPoint] = []
+    orders_trend: List[ChartPoint] = []
+    revenue_by_category: List[ChartPoint] = []
+    order_status_breakdown: List[ChartPoint] = []
+    inventory_health: List[ChartPoint] = []
 
 
 # ---------------------------------------------------------------------------
@@ -481,6 +565,17 @@ async def seed_admin_and_samples():
             existing.password_hash = hash_password(admin_password)
             await db.commit()
             logger.info("Updated admin password from env")
+
+        category_count = (await db.execute(select(func.count(Category.id)))).scalar_one()
+        if category_count == 0:
+            db.add_all([
+                Category(name="Computer Accessories"),
+                Category(name="Displays"),
+                Category(name="Audio"),
+                Category(name="Cameras"),
+            ])
+            await db.commit()
+            logger.info("Seeded default categories")
 
         if os.environ.get("SEED_SAMPLE_DATA", "false").lower() != "true":
             return
@@ -631,6 +726,194 @@ def product_to_out(p: Product) -> ProductOut:
     )
 
 
+IMPORT_CSV_HEADERS = [
+    "name", "sku", "barcode", "category", "brand", "price", "cost_price", "discount_price",
+    "tax_rate", "currency", "quantity", "reorder_level", "unit", "color", "size",
+    "weight_kg", "image_url", "tags", "supplier", "status", "short_description", "description",
+]
+IMPORT_CSV_EXAMPLE = [
+    "Sample Mug", "MUG-001", "8901234567999", "Drinkware", "GenericBrand",
+    "12.99", "5.50", "", "8.0", "USD", "100", "20", "pcs", "White", "11oz",
+    "0.35", "https://example.com/mug.jpg", "ceramic,kitchen", "Acme Imports",
+    "active", "Classic ceramic mug", "11oz ceramic coffee mug, dishwasher safe.",
+]
+
+
+IMPORT_REQUIRED_COLUMNS = {"name", "sku", "price", "quantity"}
+
+
+async def ensure_category_exists(db: AsyncSession, name: Optional[str]) -> None:
+    if not name:
+        return
+    existing = (
+        await db.execute(select(Category).where(Category.name == name))
+    ).scalar_one_or_none()
+    if existing is None:
+        db.add(Category(name=name))
+        await db.flush()
+
+
+def _clean_import_cell(value) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return str(value).strip() or None
+
+
+def _canonicalize_import_row(raw: dict) -> dict:
+    data = {}
+    for key, value in raw.items():
+        if key is None:
+            continue
+        col = str(key).strip()
+        if not col:
+            continue
+        cleaned = _clean_import_cell(value)
+        if cleaned is not None:
+            data[col] = cleaned
+    return data
+
+
+def _import_row_get(data: dict, key: str):
+    target = key.lower()
+    for k, v in data.items():
+        if str(k).strip().lower() == target:
+            return v
+    return None
+
+
+def _validate_import_columns(columns) -> None:
+    if columns is None or len(columns) == 0:
+        raise HTTPException(status_code=400, detail="File must include a header row")
+    normalized = {str(c).strip().lower() for c in columns if c is not None and str(c).strip()}
+    if not IMPORT_REQUIRED_COLUMNS.issubset(normalized):
+        raise HTTPException(status_code=400, detail="File must include columns: name, sku, price, quantity")
+
+
+def _parse_csv_import_rows(raw: bytes) -> list[tuple[int, dict]]:
+    text = raw.decode("utf-8-sig", errors="replace")
+    reader = csv.DictReader(io.StringIO(text))
+    _validate_import_columns(reader.fieldnames)
+    return [(idx, _canonicalize_import_row(row)) for idx, row in enumerate(reader, start=2)]
+
+
+def _parse_xlsx_import_rows(raw: bytes) -> list[tuple[int, dict]]:
+    df = pd.read_excel(io.BytesIO(raw), engine="openpyxl")
+    _validate_import_columns(df.columns)
+    return [(int(idx) + 2, _canonicalize_import_row(row.to_dict())) for idx, row in df.iterrows()]
+
+
+def _parse_import_file(filename: str, raw: bytes) -> list[tuple[int, dict]]:
+    lower = (filename or "").lower()
+    if lower.endswith(".csv"):
+        return _parse_csv_import_rows(raw)
+    if lower.endswith(".xlsx"):
+        return _parse_xlsx_import_rows(raw)
+    raise HTTPException(status_code=400, detail="Please upload a .csv or .xlsx file")
+
+
+def import_row_to_product_in(data: dict) -> ProductIn:
+    def cell(key: str):
+        return _import_row_get(data, key)
+
+    cost_price = cell("cost_price")
+    discount_price = cell("discount_price")
+    weight_kg = cell("weight_kg")
+    return ProductIn(
+        name=cell("name") or "",
+        sku=cell("sku") or "",
+        barcode=cell("barcode"),
+        category=cell("category"),
+        brand=cell("brand"),
+        description=cell("description"),
+        short_description=cell("short_description"),
+        price=float(cell("price") or 0),
+        cost_price=float(cost_price) if cost_price is not None else None,
+        discount_price=float(discount_price) if discount_price is not None else None,
+        tax_rate=float(cell("tax_rate") or 0),
+        currency=cell("currency") or "USD",
+        quantity=int(float(cell("quantity") or 0)),
+        reorder_level=int(float(cell("reorder_level") or 10)),
+        unit=cell("unit") or "pcs",
+        weight_kg=float(weight_kg) if weight_kg is not None else None,
+        color=cell("color"),
+        size=cell("size"),
+        image_url=cell("image_url"),
+        tags=cell("tags"),
+        supplier=cell("supplier"),
+        status=cell("status") or "active",
+    )
+
+
+async def _import_products_from_rows(
+    db: AsyncSession,
+    rows: list[tuple[int, dict]],
+    filename: str,
+) -> dict:
+    file_type = "xlsx" if filename.lower().endswith(".xlsx") else "csv"
+    total_rows = len(rows)
+    created = 0
+    errors: list[dict] = []
+    for idx, data in rows:
+        try:
+            payload = import_row_to_product_in(data)
+            async with db.begin_nested():
+                if payload.category:
+                    await ensure_category_exists(db, payload.category)
+                p = Product(**payload.model_dump())
+                db.add(p)
+                await db.flush()
+            created += 1
+        except IntegrityError:
+            errors.append({"row": idx, "sku": _import_row_get(data, "sku"), "error": "Duplicate SKU"})
+        except ValidationError as e:
+            msg = "; ".join(f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in e.errors())
+            errors.append({"row": idx, "sku": _import_row_get(data, "sku"), "error": msg[:200]})
+        except Exception as e:
+            errors.append({"row": idx, "sku": _import_row_get(data, "sku"), "error": str(e)[:200]})
+
+    log = ProductImportLog(
+        filename=filename,
+        file_type=file_type,
+        total_rows=total_rows,
+        created_count=created,
+        failed_count=len(errors),
+        errors_json=json.dumps(errors),
+    )
+    db.add(log)
+    await db.commit()
+    await db.refresh(log)
+    return {
+        "log_id": log.id,
+        "total_rows": total_rows,
+        "created": created,
+        "failed": len(errors),
+        "errors": errors,
+    }
+
+
+def _import_log_to_out(log: ProductImportLog) -> ProductImportLogOut:
+    errors_raw = json.loads(log.errors_json) if log.errors_json else []
+    return ProductImportLogOut(
+        id=log.id,
+        filename=log.filename,
+        file_type=log.file_type,
+        total_rows=log.total_rows,
+        created_count=log.created_count,
+        failed_count=log.failed_count,
+        errors=[ImportRowError(**e) for e in errors_raw],
+        created_at=log.created_at,
+    )
+
+
+def csv_row_to_product_in(data: dict) -> ProductIn:
+    return import_row_to_product_in(data)
+
+
 @api.get("/products", response_model=List[ProductOut])
 async def list_products(_: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     rows = (await db.execute(select(Product).order_by(Product.created_at.desc()))).scalars().all()
@@ -648,6 +931,92 @@ async def create_product(payload: ProductIn, _: User = Depends(get_current_user)
         raise HTTPException(status_code=409, detail="SKU must be unique")
     await db.refresh(p)
     return product_to_out(p)
+
+
+@api.get("/products/import/template")
+async def import_template(
+    format: str = Query("json", pattern="^(json|csv|xlsx)$"),
+    _: User = Depends(get_current_user),
+):
+    row = dict(zip(IMPORT_CSV_HEADERS, IMPORT_CSV_EXAMPLE))
+    if format == "csv":
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(IMPORT_CSV_HEADERS)
+        writer.writerow(IMPORT_CSV_EXAMPLE)
+        return Response(
+            content=buf.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": 'attachment; filename="products_import_template.csv"'},
+        )
+    if format == "xlsx":
+        xbuf = io.BytesIO()
+        pd.DataFrame([row], columns=IMPORT_CSV_HEADERS).to_excel(xbuf, index=False, engine="openpyxl")
+        return Response(
+            content=xbuf.getvalue(),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": 'attachment; filename="products_import_template.xlsx"'},
+        )
+    return {
+        "headers": IMPORT_CSV_HEADERS,
+        "example_row": IMPORT_CSV_EXAMPLE,
+        "formats": ["json", "csv", "xlsx"],
+    }
+
+
+@api.post("/products/import/preview")
+async def import_preview(
+    file: UploadFile = File(...),
+    _: User = Depends(get_current_user),
+):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Please upload a .csv or .xlsx file")
+    raw = await file.read()
+    rows = _parse_import_file(file.filename, raw)
+    lower = file.filename.lower()
+    return {
+        "filename": file.filename,
+        "file_type": "xlsx" if lower.endswith(".xlsx") else "csv",
+        "total_rows": len(rows),
+    }
+
+
+@api.get("/products/import/logs", response_model=List[ProductImportLogOut])
+async def list_import_logs(_: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    rows = (
+        await db.execute(
+            select(ProductImportLog).order_by(ProductImportLog.created_at.desc()).limit(50)
+        )
+    ).scalars().all()
+    return [_import_log_to_out(log) for log in rows]
+
+
+@api.get("/products/import/logs/{log_id}", response_model=ProductImportLogOut)
+async def get_import_log(log_id: str, _: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    log = await db.get(ProductImportLog, log_id)
+    if log is None:
+        raise HTTPException(status_code=404, detail="Import log not found")
+    return _import_log_to_out(log)
+
+
+@api.post("/products/import", response_model=ProductImportOut)
+async def import_products_file(
+    file: UploadFile = File(...),
+    _: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Please upload a .csv or .xlsx file")
+    raw = await file.read()
+    rows = _parse_import_file(file.filename, raw)
+    result = await _import_products_from_rows(db, rows, file.filename)
+    return ProductImportOut(
+        log_id=result["log_id"],
+        total_rows=result["total_rows"],
+        created=result["created"],
+        failed=result["failed"],
+        errors=[ImportRowError(**e) for e in result["errors"][:50]],
+    )
 
 
 @api.get("/products/{product_id}", response_model=ProductOut)
@@ -688,6 +1057,65 @@ async def delete_product(product_id: str, _: User = Depends(get_current_user), d
         raise HTTPException(status_code=409, detail="Product is referenced by existing orders")
 
 
+# --------- Categories ---------
+def category_to_out(c: Category) -> CategoryOut:
+    return CategoryOut(id=c.id, name=c.name, created_at=c.created_at)
+
+
+@api.get("/categories", response_model=List[CategoryOut])
+async def list_categories(_: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    rows = (await db.execute(select(Category).order_by(Category.name.asc()))).scalars().all()
+    return [category_to_out(c) for c in rows]
+
+
+@api.post("/categories", response_model=CategoryOut, status_code=201)
+async def create_category(payload: CategoryIn, _: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    c = Category(name=payload.name)
+    db.add(c)
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Category name already exists")
+    await db.refresh(c)
+    return category_to_out(c)
+
+
+@api.put("/categories/{category_id}", response_model=CategoryOut)
+async def update_category(
+    category_id: str,
+    payload: CategoryUpdate,
+    _: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    c = await db.get(Category, category_id)
+    if c is None:
+        raise HTTPException(status_code=404, detail="Category not found")
+    old_name = c.name
+    new_name = payload.name
+    if old_name != new_name:
+        c.name = new_name
+        await db.execute(
+            update(Product).where(Product.category == old_name).values(category=new_name)
+        )
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Category name already exists")
+    await db.refresh(c)
+    return category_to_out(c)
+
+
+@api.delete("/categories/{category_id}", status_code=204)
+async def delete_category(category_id: str, _: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    c = await db.get(Category, category_id)
+    if c is None:
+        raise HTTPException(status_code=404, detail="Category not found")
+    await db.delete(c)
+    await db.commit()
+
+
 # --------- Customers ---------
 def customer_to_out(c: Customer) -> CustomerOut:
     return CustomerOut(
@@ -722,6 +1150,22 @@ async def get_customer(customer_id: str, _: User = Depends(get_current_user), db
     if c is None:
         raise HTTPException(status_code=404, detail="Customer not found")
     return customer_to_out(c)
+
+
+@api.get("/customers/{customer_id}/orders", response_model=List[OrderOut])
+async def customer_orders(customer_id: str, _: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    c = await db.get(Customer, customer_id)
+    if c is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    rows = (
+        await db.execute(
+            select(Order)
+            .where(Order.customer_id == customer_id)
+            .options(selectinload(Order.items), selectinload(Order.customer))
+            .order_by(Order.created_at.desc())
+        )
+    ).scalars().all()
+    return [order_to_out(o) for o in rows]
 
 
 @api.delete("/customers/{customer_id}", status_code=204)
@@ -955,76 +1399,94 @@ async def delete_variant(product_id: str, variant_id: str, _: User = Depends(get
         raise HTTPException(status_code=409, detail="Variant is referenced by existing orders")
 
 
-# --------- CSV Bulk Import (Products) ---------
-@api.get("/products/import/template")
-async def csv_template(_: User = Depends(get_current_user)):
-    headers = ["name", "sku", "barcode", "category", "brand", "price", "cost_price", "discount_price",
-               "tax_rate", "currency", "quantity", "reorder_level", "unit", "color", "size",
-               "weight_kg", "image_url", "tags", "supplier", "status", "short_description", "description"]
-    example = ["Sample Mug", "MUG-001", "8901234567999", "Drinkware", "GenericBrand",
-               "12.99", "5.50", "", "8.0", "USD", "100", "20", "pcs", "White", "11oz",
-               "0.35", "https://example.com/mug.jpg", "ceramic,kitchen", "Acme Imports",
-               "active", "Classic ceramic mug", "11oz ceramic coffee mug, dishwasher safe."]
-    return {"headers": headers, "example_row": example}
-
-
-@api.post("/products/import")
-async def import_products_csv(
-    file: UploadFile = File(...),
-    _: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-):
-    if not file.filename or not file.filename.lower().endswith(".csv"):
-        raise HTTPException(status_code=400, detail="Please upload a .csv file")
-    raw = (await file.read()).decode("utf-8-sig", errors="replace")
-    reader = csv.DictReader(io.StringIO(raw))
-    if not reader.fieldnames or "name" not in reader.fieldnames or "sku" not in reader.fieldnames or "price" not in reader.fieldnames or "quantity" not in reader.fieldnames:
-        raise HTTPException(status_code=400, detail="CSV must include columns: name, sku, price, quantity")
-
-    created = 0
-    errors: list[dict] = []
-    for idx, row in enumerate(reader, start=2):  # row 1 is header
-        try:
-            data = {k: (v.strip() if isinstance(v, str) else v) for k, v in row.items() if v not in (None, "")}
-            payload = ProductIn(
-                name=data.get("name", ""),
-                sku=data.get("sku", ""),
-                barcode=data.get("barcode"),
-                category=data.get("category"),
-                brand=data.get("brand"),
-                description=data.get("description"),
-                short_description=data.get("short_description"),
-                price=float(data.get("price", 0)),
-                cost_price=float(data["cost_price"]) if "cost_price" in data else None,
-                discount_price=float(data["discount_price"]) if "discount_price" in data else None,
-                tax_rate=float(data.get("tax_rate", 0)),
-                currency=data.get("currency", "USD"),
-                quantity=int(float(data.get("quantity", 0))),
-                reorder_level=int(float(data.get("reorder_level", 10))),
-                unit=data.get("unit", "pcs"),
-                weight_kg=float(data["weight_kg"]) if "weight_kg" in data else None,
-                color=data.get("color"),
-                size=data.get("size"),
-                image_url=data.get("image_url"),
-                tags=data.get("tags"),
-                supplier=data.get("supplier"),
-                status=data.get("status", "active"),
-            )
-            p = Product(**payload.model_dump())
-            db.add(p)
-            await db.flush()
-            created += 1
-        except IntegrityError:
-            await db.rollback()
-            errors.append({"row": idx, "sku": row.get("sku"), "error": "Duplicate SKU"})
-        except Exception as e:
-            await db.rollback()
-            errors.append({"row": idx, "sku": row.get("sku"), "error": str(e)[:200]})
-    await db.commit()
-    return {"created": created, "failed": len(errors), "errors": errors[:50]}
-
-
 # --------- Dashboard ---------
+def _month_label(dt: datetime) -> str:
+    return dt.strftime("%b %Y")
+
+
+async def _dashboard_charts(db: AsyncSession) -> dict:
+    now = datetime.now(timezone.utc)
+    month_starts = []
+    for offset in range(5, -1, -1):
+        year = now.year
+        month = now.month - offset
+        while month <= 0:
+            month += 12
+            year -= 1
+        month_starts.append(datetime(year, month, 1, tzinfo=timezone.utc))
+
+    monthly_rows = (
+        await db.execute(
+            select(
+                func.date_trunc("month", Order.created_at).label("month"),
+                func.count(Order.id).label("orders"),
+                func.coalesce(func.sum(Order.total_amount), 0).label("revenue"),
+            )
+            .where(Order.created_at >= month_starts[0])
+            .group_by("month")
+            .order_by("month")
+        )
+    ).all()
+    monthly_map = {
+        row.month.replace(tzinfo=timezone.utc) if row.month.tzinfo is None else row.month: row
+        for row in monthly_rows
+    }
+
+    revenue_trend = []
+    orders_trend = []
+    for start in month_starts:
+        row = monthly_map.get(start)
+        revenue_trend.append(ChartPoint(label=_month_label(start), value=float(row.revenue if row else 0)))
+        orders_trend.append(ChartPoint(label=_month_label(start), value=float(row.orders if row else 0)))
+
+    category_rows = (
+        await db.execute(
+            select(Product.category, func.coalesce(func.sum(OrderItem.line_total), 0).label("revenue"))
+            .select_from(OrderItem)
+            .join(Product, OrderItem.product_id == Product.id)
+            .where(Product.category.isnot(None))
+            .group_by(Product.category)
+            .order_by(func.sum(OrderItem.line_total).desc())
+            .limit(8)
+        )
+    ).all()
+    revenue_by_category = [
+        ChartPoint(label=row.category or "Uncategorized", value=float(row.revenue))
+        for row in category_rows
+        if float(row.revenue) > 0
+    ]
+
+    status_rows = (
+        await db.execute(
+            select(Order.status, func.count(Order.id).label("count"))
+            .group_by(Order.status)
+            .order_by(func.count(Order.id).desc())
+        )
+    ).all()
+    order_status_breakdown = [
+        ChartPoint(label=row.status.replace("_", " ").title(), value=float(row.count))
+        for row in status_rows
+    ]
+
+    products = (await db.execute(select(Product))).scalars().all()
+    out_of_stock = sum(1 for p in products if p.quantity == 0)
+    low_stock = sum(1 for p in products if 0 < p.quantity <= p.reorder_level)
+    healthy = sum(1 for p in products if p.quantity > p.reorder_level)
+    inventory_health = [
+        ChartPoint(label="Healthy", value=float(healthy)),
+        ChartPoint(label="Low Stock", value=float(low_stock)),
+        ChartPoint(label="Out of Stock", value=float(out_of_stock)),
+    ]
+
+    return {
+        "revenue_trend": revenue_trend,
+        "orders_trend": orders_trend,
+        "revenue_by_category": revenue_by_category,
+        "order_status_breakdown": order_status_breakdown,
+        "inventory_health": inventory_health,
+    }
+
+
 @api.get("/dashboard", response_model=DashboardOut)
 async def dashboard(_: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     total_products = (await db.execute(select(func.count(Product.id)))).scalar_one()
@@ -1038,6 +1500,7 @@ async def dashboard(_: User = Depends(get_current_user), db: AsyncSession = Depe
             .order_by(Product.quantity.asc())
         )
     ).scalars().all()
+    charts = await _dashboard_charts(db)
     return DashboardOut(
         total_products=total_products,
         total_customers=total_customers,
@@ -1045,6 +1508,7 @@ async def dashboard(_: User = Depends(get_current_user), db: AsyncSession = Depe
         total_revenue=float(total_revenue or 0),
         low_stock_count=len(low_stock_rows),
         low_stock_products=[product_to_out(p) for p in low_stock_rows],
+        **charts,
     )
 
 

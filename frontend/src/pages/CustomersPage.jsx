@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import api, { formatApiError } from "@/lib/api";
+import { formatMoney } from "@/lib/currency";
 import { PageHeader, EmptyState } from "@/components/Common";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
 import {
   Table,
   TableBody,
@@ -20,10 +22,21 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Plus, Trash, Users } from "@phosphor-icons/react";
+import { Plus, Trash, Users, Eye } from "@phosphor-icons/react";
 import { toast } from "sonner";
 
 const EMPTY = { full_name: "", email: "", phone: "", address: "" };
+
+const STATUS_VARIANT = {
+  pending: "secondary",
+  confirmed: "default",
+  processing: "default",
+  shipped: "default",
+  delivered: "default",
+  cancelled: "secondary",
+  returned: "secondary",
+  refunded: "secondary",
+};
 
 export default function CustomersPage() {
   const [rows, setRows] = useState([]);
@@ -31,6 +44,9 @@ export default function CustomersPage() {
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(EMPTY);
   const [busy, setBusy] = useState(false);
+  const [viewing, setViewing] = useState(null);
+  const [orders, setOrders] = useState([]);
+  const [ordersLoading, setOrdersLoading] = useState(false);
 
   const refresh = async () => {
     setLoading(true);
@@ -47,6 +63,20 @@ export default function CustomersPage() {
   useEffect(() => {
     refresh();
   }, []);
+
+  const openDetail = async (c) => {
+    setViewing(c);
+    setOrders([]);
+    setOrdersLoading(true);
+    try {
+      const { data } = await api.get(`/customers/${c.id}/orders`);
+      setOrders(data);
+    } catch (e) {
+      toast.error(formatApiError(e.response?.data?.detail));
+    } finally {
+      setOrdersLoading(false);
+    }
+  };
 
   const submit = async (e) => {
     e.preventDefault();
@@ -75,6 +105,7 @@ export default function CustomersPage() {
     try {
       await api.delete(`/customers/${c.id}`);
       toast.success("Customer deleted");
+      if (viewing?.id === c.id) setViewing(null);
       refresh();
     } catch (err) {
       toast.error(formatApiError(err.response?.data?.detail));
@@ -131,7 +162,15 @@ export default function CustomersPage() {
                   <TableCell className="text-xs text-muted-foreground">
                     {c.address || "—"}
                   </TableCell>
-                  <TableCell className="text-right">
+                  <TableCell className="text-right whitespace-nowrap">
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => openDetail(c)}
+                      data-testid={`view-customer-${c.email}`}
+                    >
+                      <Eye size={16} />
+                    </Button>
                     <Button
                       variant="ghost"
                       size="icon"
@@ -204,6 +243,108 @@ export default function CustomersPage() {
           </form>
         </DialogContent>
       </Dialog>
+
+      <Dialog open={!!viewing} onOpenChange={(v) => !v && setViewing(null)}>
+        <DialogContent className="rounded-sm sm:max-w-3xl max-h-[85vh] overflow-y-auto" data-testid="customer-view-dialog">
+          <DialogHeader>
+            <DialogTitle className="font-heading">{viewing?.full_name}</DialogTitle>
+          </DialogHeader>
+          {viewing && (
+            <div className="space-y-6">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <DetailField label="Email" value={<span className="font-mono text-sm">{viewing.email}</span>} />
+                <DetailField label="Phone" value={<span className="font-mono text-sm">{viewing.phone}</span>} />
+                <DetailField label="Address" value={viewing.address || "—"} />
+                <DetailField
+                  label="Member since"
+                  value={new Date(viewing.created_at).toLocaleDateString()}
+                />
+              </div>
+
+              <div>
+                <div className="text-data-label mb-3 pb-2 border-b border-border">
+                  Order History ({orders.length})
+                </div>
+                {ordersLoading ? (
+                  <div className="text-sm text-muted-foreground">Loading orders…</div>
+                ) : orders.length === 0 ? (
+                  <div className="text-sm text-muted-foreground">No orders placed yet.</div>
+                ) : (
+                  <div className="surface-card overflow-hidden">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="text-data-label">Order</TableHead>
+                          <TableHead className="text-data-label">Date</TableHead>
+                          <TableHead className="text-data-label text-right">Items</TableHead>
+                          <TableHead className="text-data-label text-right">Total</TableHead>
+                          <TableHead className="text-data-label">Status</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {orders.map((o) => (
+                          <TableRow key={o.id} data-testid={`customer-order-${o.id}`}>
+                            <TableCell className="font-mono text-xs">{o.id.slice(0, 8)}</TableCell>
+                            <TableCell className="text-xs text-muted-foreground">
+                              {new Date(o.created_at).toLocaleString()}
+                            </TableCell>
+                            <TableCell className="text-right font-mono">{o.items.length}</TableCell>
+                            <TableCell className="text-right font-mono font-semibold">
+                              {formatMoney(o.total_amount, "USD")}
+                            </TableCell>
+                            <TableCell>
+                              <Badge
+                                variant={STATUS_VARIANT[o.status] || "secondary"}
+                                className="rounded-none uppercase text-[10px] tracking-wider"
+                              >
+                                {o.status}
+                              </Badge>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                )}
+
+                {orders.length > 0 && (
+                  <div className="mt-4 space-y-3">
+                    {orders.map((o) => (
+                      <div key={`items-${o.id}`} className="surface-card p-3 text-sm" data-testid={`customer-order-items-${o.id}`}>
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="font-mono text-xs text-muted-foreground">Order {o.id.slice(0, 8)}</span>
+                          <span className="font-mono font-semibold">{formatMoney(o.total_amount, "USD")}</span>
+                        </div>
+                        <ul className="space-y-1 text-xs">
+                          {o.items.map((it) => (
+                            <li key={it.id} className="flex justify-between gap-4">
+                              <span>
+                                {it.product_name}
+                                {it.variant_label ? ` (${it.variant_label})` : ""}
+                                <span className="text-muted-foreground font-mono ml-1">×{it.quantity}</span>
+                              </span>
+                              <span className="font-mono shrink-0">{formatMoney(it.line_total, "USD")}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function DetailField({ label, value }) {
+  return (
+    <div className="surface-card p-3">
+      <div className="text-data-label">{label}</div>
+      <div className="text-sm font-medium mt-1">{value}</div>
     </div>
   );
 }
