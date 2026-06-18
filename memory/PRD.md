@@ -1,4 +1,4 @@
-# STOCKHAUS — Inventory & Order Management System
+# Inventory & Order Management System
 
 ## Problem Statement
 Production-ready containerized inventory & order management system with React + FastAPI + PostgreSQL + Docker Compose + JWT admin auth.

@@ -57,9 +57,11 @@ logger = logging.getLogger("inventory")
 # Database setup
 # ---------------------------------------------------------------------------
 DATABASE_URL = os.environ["DATABASE_URL"]
-# Render/Railway often provide postgresql:// — convert for async SQLAlchemy driver
+# Render/Railway often provide postgresql:// or postgres:// — convert for async driver
 if DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
+elif DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql+asyncpg://", 1)
 JWT_SECRET = os.environ["JWT_SECRET"]
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = 60 * 24  # 24 hours

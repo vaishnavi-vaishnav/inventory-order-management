@@ -1,4 +1,4 @@
-# STOCKHAUS — Inventory & Order Management System
+# Inventory & Order Management System
 
 Production-ready, containerized full-stack inventory & order management platform.
 
@@ -97,7 +97,7 @@ REACT_APP_BACKEND_URL=http://localhost:8001 yarn start
    - `ADMIN_EMAIL` / `ADMIN_PASSWORD` — login credentials
    - `CORS_ORIGINS` — your frontend URL (e.g. `https://your-app.vercel.app`)
    - `SEED_SAMPLE_DATA=true`
-4. Note your backend URL, e.g. `https://stockhaus-api.onrender.com`
+4. Note your backend URL, e.g. `https://inventory-api.onrender.com`
 
 ### Frontend (Vercel or Netlify)
 

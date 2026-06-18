@@ -33,7 +33,7 @@ export default function AppLayout() {
             <Package size={18} weight="bold" />
           </div>
           <div>
-            <div className="font-heading text-sm font-black tracking-tight">STOCKHAUS</div>
+            <div className="font-heading text-sm font-black tracking-tight">Inventory Manager</div>
             <div className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground -mt-0.5">
               Control Panel
             </div>
@@ -82,7 +82,7 @@ export default function AppLayout() {
           <div className="h-7 w-7 bg-primary text-primary-foreground grid place-items-center rounded-sm">
             <Package size={16} weight="bold" />
           </div>
-          <div className="font-heading text-sm font-black tracking-tight">STOCKHAUS</div>
+          <div className="font-heading text-sm font-black tracking-tight">Inventory Manager</div>
         </div>
         <Button variant="outline" size="sm" onClick={handleLogout} data-testid="mobile-logout-button">
           <SignOut size={14} />

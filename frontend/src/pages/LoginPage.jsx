@@ -44,7 +44,7 @@ export default function LoginPage() {
               <Package size={20} weight="bold" />
             </div>
             <div>
-              <div className="font-heading text-lg font-black tracking-tight">STOCKHAUS</div>
+              <div className="font-heading text-lg font-black tracking-tight">Inventory Manager</div>
               <div className="text-data-label -mt-0.5">Inventory Control</div>
             </div>
           </div>

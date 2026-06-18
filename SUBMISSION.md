@@ -1,6 +1,6 @@
 # Assessment Submission Guide
 
-Use this checklist to publish STOCKHAUS and submit all required links.
+Use this checklist to publish the application and submit all required links.
 
 ## Requirements checklist
 
@@ -66,22 +66,22 @@ export DOCKER_USER=your-dockerhub-username
 docker login
 
 # Backend (required for submission)
-docker build -t $DOCKER_USER/stockhaus-backend:latest ./backend
-docker push $DOCKER_USER/stockhaus-backend:latest
+docker build -t $DOCKER_USER/inventory-backend:latest ./backend
+docker push $DOCKER_USER/inventory-backend:latest
 
 # Frontend (optional but recommended)
 docker build \
   --build-arg REACT_APP_BACKEND_URL=https://YOUR-BACKEND.onrender.com \
-  -t $DOCKER_USER/stockhaus-frontend:latest ./frontend
-docker push $DOCKER_USER/stockhaus-frontend:latest
+  -t $DOCKER_USER/inventory-frontend:latest ./frontend
+docker push $DOCKER_USER/inventory-frontend:latest
 ```
 
 Or run: `./scripts/publish-docker.sh your-dockerhub-username`
 
 **Docker image links:**
 
-- Backend: `https://hub.docker.com/r/YOUR_USERNAME/stockhaus-backend`
-- Frontend: `https://hub.docker.com/r/YOUR_USERNAME/stockhaus-frontend`
+- Backend: `https://hub.docker.com/r/YOUR_USERNAME/inventory-backend`
+- Frontend: `https://hub.docker.com/r/YOUR_USERNAME/inventory-frontend`
 
 ---
 
@@ -143,8 +143,8 @@ GitHub Repository:
 https://github.com/YOUR_USERNAME/YOUR_REPO
 
 Docker Hub Images:
-- Backend: https://hub.docker.com/r/YOUR_USERNAME/stockhaus-backend
-- Frontend: https://hub.docker.com/r/YOUR_USERNAME/stockhaus-frontend
+- Backend: https://hub.docker.com/r/YOUR_USERNAME/inventory-backend
+- Frontend: https://hub.docker.com/r/YOUR_USERNAME/inventory-frontend
 
 Live Application:
 - Frontend: https://YOUR-APP.vercel.app

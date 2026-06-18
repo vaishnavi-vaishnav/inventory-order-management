@@ -2,7 +2,7 @@
 # Docs: https://render.com/docs/blueprint-spec
 services:
   - type: web
-    name: stockhaus-api
+    name: inventory-api
     runtime: docker
     dockerfilePath: ./backend/Dockerfile
     dockerContext: ./backend
@@ -11,7 +11,7 @@ services:
     envVars:
       - key: DATABASE_URL
         fromDatabase:
-          name: stockhaus-db
+          name: inventory-db
           property: connectionString
       - key: JWT_SECRET
         generateValue: true
@@ -25,7 +25,7 @@ services:
         sync: false
 
 databases:
-  - name: stockhaus-db
+  - name: inventory-db
     plan: free
     databaseName: inventory_db
     user: inventory_user
