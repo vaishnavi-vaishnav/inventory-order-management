@@ -1,0 +1,63 @@
+# IDE and editors
+.idea/
+.vscode/
+
+# Dependencies
+node_modules/
+/.pnp
+.pnp.js
+.yarn/install-state.gz
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# Testing
+/coverage
+.pytest_cache
+
+# Production builds
+/build
+dist/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+backend/.env
+frontend/.env
+*token.json*
+*credentials.json*
+
+# Logs and debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+dump.rdb
+
+# System
+.DS_Store
+*.pem
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+
+# Local SQLite dev DB
+dev.db
+
+# Deployment
+.vercel
+.netlify
+
+# Build caches
+.cache/
+frontend/node_modules/.cache/
+
+# Assessment tooling (optional local notes)
+memory/

@@ -1,0 +1,113 @@
+{
+  "theme": "Light",
+  "archetype": "4 (Swiss & High-Contrast)",
+  "design_philosophy": "Objective, rigid, and function-first. Color is used strictly for hierarchy and state signaling. Emphasizes clean data representation through sharp borders, monospace typography for technical data, and high-density layouts suitable for inventory control.",
+  "typography": {
+    "font_strategy": "The 'Swiss Brutalist' Tech Pair: Sharp authoritative headings with sterile, highly legible body.",
+    "headings_font": "Chivo",
+    "body_font": "IBM Plex Sans",
+    "monospace_font": "JetBrains Mono",
+    "sizing": {
+      "h1": "text-4xl tracking-tight leading-none font-bold",
+      "h2": "text-2xl tracking-tight leading-none font-bold",
+      "h3": "text-xl tracking-tight font-medium",
+      "body": "text-sm leading-relaxed",
+      "data_labels": "text-xs uppercase tracking-[0.1em] font-bold text-muted-foreground",
+      "sku_numbers": "text-sm font-mono tracking-tight"
+    }
+  },
+  "colors": {
+    "css_variables": {
+      "light": {
+        "--background": "0 0% 100%",
+        "--foreground": "240 10% 3.9%",
+        "--card": "0 0% 100%",
+        "--card-foreground": "240 10% 3.9%",
+        "--popover": "0 0% 100%",
+        "--popover-foreground": "240 10% 3.9%",
+        "--primary": "223 100% 33%",
+        "--primary-foreground": "0 0% 100%",
+        "--secondary": "240 4.8% 95.9%",
+        "--secondary-foreground": "240 5.9% 10%",
+        "--muted": "240 4.8% 95.9%",
+        "--muted-foreground": "240 3.8% 46.1%",
+        "--accent": "240 4.8% 95.9%",
+        "--accent-foreground": "240 5.9% 10%",
+        "--destructive": "0 100% 45%",
+        "--destructive-foreground": "0 0% 100%",
+        "--warning": "38 92% 50%",
+        "--warning-foreground": "0 0% 100%",
+        "--border": "240 5.9% 90%",
+        "--input": "240 5.9% 90%",
+        "--ring": "223 100% 33%",
+        "--radius": "0.125rem"
+      }
+    },
+    "rules": [
+      "No gradients anywhere. Solid colors only.",
+      "Primary color (#002FA7) is reserved ONLY for primary CTAs, active links, and key positive data points.",
+      "Destructive color is Signal Red, Warning is pure Amber.",
+      "All grays are slightly tinted with Zinc (cool gray)."
+    ]
+  },
+  "layout_and_spacing": {
+    "grid_system": "The 'Control Room' Grid",
+    "spacing_scale": "Dense and compact for tables (p-2 to p-4), generous for page wrappers (p-8 to p-12).",
+    "structure": {
+      "sidebar": "Fixed left, w-64, bg-background, border-r border-border. Clean list of nav items.",
+      "top_header": "Sticky top, h-16, backdrop-blur-md bg-white/80, border-b border-border. Used for breadcrumbs, user profile, and global actions.",
+      "main_content": "pt-16 md:pl-64 min-h-screen bg-secondary/30",
+      "dashboard_grid": "grid-cols-1 md:grid-cols-4 gap-4. KPI cards span 1 column. Charts/Tables span 3 or 4 columns."
+    },
+    "surface_strategy": {
+      "type": "Grid Borders",
+      "cards": "bg-white border border-border shadow-sm rounded-sm.",
+      "tables": "border-collapse. border-b border-border on rows. No vertical borders."
+    }
+  },
+  "components": {
+    "library": "shadcn/ui",
+    "modifications": {
+      "Button": "rounded-sm font-medium hover:-translate-y-[1px] transition-transform active:translate-y-0",
+      "Card": "rounded-sm shadow-sm border-border",
+      "Input": "rounded-sm focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-1 border-border",
+      "Table": "Dense padding (py-3 px-4). text-sm. Use monospace font for IDs and SKUs.",
+      "Badge": "rounded-none uppercase tracking-wider text-[10px] font-bold px-2 py-0.5 border"
+    },
+    "specific_features": {
+      "stock_indicator": "Use a dot indicator + text. Red dot for out of stock, Amber dot for low stock, Green dot for in stock. Or use solid Badge.",
+      "order_total": "Auto-calculated field should be highlighted with a subtle bg-muted p-4 border border-border flex justify-between items-center text-lg font-bold."
+    }
+  },
+  "motion_and_interactions": {
+    "hover_states": "Buttons must explicitly define hover colors (e.g. hover:bg-primary/90). Table rows should have hover:bg-muted/50.",
+    "page_transitions": "Subtle fade-in on load (animate-in fade-in duration-300).",
+    "staggered_lists": "Dashboard summary cards should fade in with a slight upward translation, staggered by 100ms."
+  },
+  "media_and_icons": {
+    "icon_library": "@phosphor-icons/react",
+    "icon_style": "Regular weight, 20px size for nav, 16px for inline actions.",
+    "installation": "yarn add @phosphor-icons/react",
+    "image_urls": {
+      "login_split_background": {
+        "url": "https://images.unsplash.com/photo-1694885169342-909981fb408a?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1MDZ8MHwxfHNlYXJjaHwyfHxjbGVhbiUyMG1vZGVybiUyMHdhcmVob3VzZSUyMGFyY2hpdGVjdHVyZXxlbnwwfHx8fDE3ODE2MTE3MzF8MA&ixlib=rb-4.1.0&q=85",
+        "description": "Clean modern empty warehouse architecture. Use as a full-bleed background on the right half of the login page with a subtle black/20 overlay.",
+        "category": "background"
+      }
+    }
+  },
+  "accessibility_and_testing": {
+    "testing_attributes": "ALL interactive elements must have data-testid attributes (e.g., data-testid='submit-order-button', data-testid='sku-input').",
+    "contrast": "Ensure pure black/white text over primary/warning/destructive backgrounds.",
+    "focus": "Visible focus rings on all inputs and buttons."
+  },
+  "instructions_to_main_agent": [
+    "Install Google Fonts for 'Chivo', 'IBM Plex Sans', and 'JetBrains Mono' in index.html.",
+    "Configure Tailwind with the exact CSS variables provided. Set radius to 0.125rem.",
+    "Build a fixed left sidebar layout. Main content should have a slight off-white/gray background (bg-secondary/30) to make the pure white cards pop.",
+    "Implement the 'Control Room' grid for the dashboard. Use dense, tight spacing.",
+    "Use Phosphor icons for all iconography.",
+    "Ensure the login page is a 50/50 split layout using the provided warehouse image on one side and a clean login form on the other.",
+    "IMPORTANT: Do not use HTML inputs like type='date' or <select>. Rely heavily on customized Shadcn components for forms."
+  ]
+}
