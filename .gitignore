@@ -60,4 +60,8 @@ dev.db
 frontend/node_modules/.cache/
 
 # Assessment tooling (optional local notes)
-memory/
+test_result.md
+design_guidelines.json
+gitignore.txt
+env.example
+dev.db

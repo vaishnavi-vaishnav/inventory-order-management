@@ -2,6 +2,8 @@
 
 Production-ready, containerized full-stack inventory & order management platform.
 
+> **Submitting the assessment?** Follow **[SUBMISSION.md](./SUBMISSION.md)** for GitHub, Docker Hub, Render, and Vercel steps.
+
 - **Frontend**: React 19, Tailwind, shadcn/ui, Phosphor icons (Swiss/high-contrast UI)
 - **Backend**: FastAPI (Python 3.11) + SQLAlchemy 2.0 async + JWT auth
 - **Database**: PostgreSQL 16
