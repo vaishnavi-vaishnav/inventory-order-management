@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import api, { formatApiError } from "@/lib/api";
 import { PageHeader, EmptyState } from "@/components/Common";
 import { Button } from "@/components/ui/button";
@@ -459,14 +459,14 @@ function VariantsManager({ productId }) {
   const [form, setForm] = useState({ sku: "", color: "", size: "", price: "", quantity: "0" });
   const [busy, setBusy] = useState(false);
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
     try {
       const { data } = await api.get(`/products/${productId}/variants`);
       setVariants(data);
     } catch {}
-  };
+  }, [productId]);
 
-  useEffect(() => { refresh(); /* eslint-disable-next-line */ }, [productId]);
+  useEffect(() => { refresh(); }, [refresh]);
 
   const add = async (e) => {
     e.preventDefault();
