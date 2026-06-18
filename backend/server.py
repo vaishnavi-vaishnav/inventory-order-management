@@ -1051,9 +1051,14 @@ async def dashboard(_: User = Depends(get_current_user), db: AsyncSession = Depe
 # ---------------------------------------------------------------------------
 # Wire up CORS + router
 # ---------------------------------------------------------------------------
+_cors_raw = os.environ.get("CORS_ORIGINS", "*").strip()
+if not _cors_raw:
+    _cors_raw = "*"
+_cors_origins = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_origins=_cors_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
